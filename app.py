@@ -7,9 +7,11 @@ from ultralytics import YOLO
 
 app = FastAPI()
 
+# ✅ แก้ไขส่วน CORS ให้รองรับการเชื่อมต่อจาก Vercel
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # อนุญาตทุกแหล่งที่มา
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -54,8 +56,18 @@ def read_image(file: UploadFile):
     return img
 
 # -------------------------
-# API
+# API ROUTES
 # -------------------------
+
+# ✅ เพิ่ม Route หน้าแรกเพื่อไม่ให้ขึ้น Not Found และใช้เช็คสถานะ
+@app.get("/")
+async def root():
+    return {
+        "message": "Banana Expert AI Server is Running",
+        "status": "online",
+        "docs": "/docs"
+    }
+
 @app.post("/detect")
 async def detect(image: UploadFile = File(...), mode: str = Form("real")):
     try:
@@ -117,4 +129,6 @@ async def detect(image: UploadFile = File(...), mode: str = Form("real")):
 # -------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # ดึงค่า Port จาก Environment (เผื่อรัน Local จะได้รันง่ายๆ)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
