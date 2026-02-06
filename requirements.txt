@@ -4,4 +4,9 @@ python-multipart
 numpy==1.26.4
 Pillow
 opencv-python-headless==4.9.0.80
+
+# 🔴 บังคับ torch CPU
+torch==2.1.2+cpu
+torchvision==0.16.2+cpu
+
 ultralytics==8.1.0
