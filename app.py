@@ -1,80 +1,10 @@
 import os
-import io
-import requests
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
-from rembg import remove
-import onnxruntime as ort
+import cv2
 import numpy as np
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.middleware.cors import CORSMiddleware
+from ultralytics import YOLO
 
-# ----------------------------
-# ENV
-# ----------------------------
-MODEL_URL = os.environ.get("MODEL_URL")       # URL ของ Supabase
-MODEL_LOCAL_PATH = os.environ.get("MODEL_LOCAL_PATH", "best_model.onnx")
-PORT = int(os.environ.get("PORT", 8000))
-MAX_UPLOAD_MB = 5
-TARGET_SIZE = 640
-
-os.environ["RMBG_MODEL"] = "u2netp"
-
-session = None
-
-# ----------------------------
-# DOWNLOAD MODEL
-# ----------------------------
-def download_model_if_needed():
-    if not MODEL_URL:
-        raise ValueError("MODEL_URL not set")
-
-    # ถ้ามีโมเดลแล้วให้ใช้เลย
-    if os.path.exists(MODEL_LOCAL_PATH) and os.path.getsize(MODEL_LOCAL_PATH) > 5000:
-        print("✅ YOLO model already exists")
-        return
-
-    print("⬇️ Downloading YOLO model from Supabase private bucket...")
-
-    supabase_key = os.environ.get("SUPABASE_KEY")
-    headers = {}
-    if supabase_key:
-        headers["apikey"] = supabase_key
-        headers["Authorization"] = f"Bearer {supabase_key}"
-
-    with requests.get(MODEL_URL, headers=headers, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        with open(MODEL_LOCAL_PATH, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-
-    print("✅ Download complete")
-
-# ----------------------------
-# LOAD MODEL
-# ----------------------------
-def load_yolo_model():
-    global session
-    if session is None:
-        download_model_if_needed()
-        session = ort.InferenceSession(
-            MODEL_LOCAL_PATH,
-            providers=["CPUExecutionProvider"]
-        )
-        print("🚀 YOLO ONNX model loaded")
-
-# ----------------------------
-# UTILS
-# ----------------------------
-def bytes_to_pil(b):
-    return Image.open(io.BytesIO(b))
-
-def resize_to_640(img):
-    return img.resize((TARGET_SIZE, TARGET_SIZE))
-
-# ----------------------------
-# FASTAPI
-# ----------------------------
 app = FastAPI()
 
 app.add_middleware(
@@ -84,48 +14,107 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def root():
-    return {"message": "Banana Model API running", "status": "ok"}
+# -------------------------
+# LOAD MODELS WITH FALLBACK
+# -------------------------
+print("🚀 Loading Models...")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, "model")
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+# 1. Filter model (banana / non-banana)
+MODEL_FILTER = YOLO(os.path.join(MODEL_DIR, "best_m1_bgv8s.pt"))
 
+# 2. Real-image detector (Main)
+try:
+    MODEL_REAL = YOLO(os.path.join(MODEL_DIR, "best_modelv8sbg.pt"))
+    print("✅ MODEL_REAL: YOLOv8s loaded as Main")
+except Exception as e:
+    print(f"⚠️ Cannot load YOLOv8s, switching to YOLOv8n fallback... Error: {e}")
+    MODEL_REAL = YOLO(os.path.join(MODEL_DIR, "best_modelv8nbg.pt"))
+    print("🚀 MODEL_REAL: YOLOv8n loaded as Fallback")
 
+print("✅ All systems ready")
+
+# -------------------------
+# CLASS KEY MAP (ปรับเป็น lowercase เพื่อเชื่อม slug ใน Supabase)
+# -------------------------
+CLASS_KEYS = {
+    0: "candyapple", 1: "namwa", 2: "namwadam", 3: "homthong",
+    4: "nak", 5: "thepphanom", 6: "kai", 7: "lepchanggud",
+    8: "ngachang", 9: "huamao",
+}
+
+# -------------------------
+# UTILS
+# -------------------------
+def read_image(file: UploadFile):
+    img_bytes = file.file.read()
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    return img
+
+# -------------------------
+# API
+# -------------------------
 @app.post("/detect")
-async def detect(file: UploadFile = File(...)):
-    if file.content_type.split("/")[0] != "image":
-        raise HTTPException(400, "File must be an image")
-
-    contents = await file.read()
-    if len(contents) > MAX_UPLOAD_MB * 1024 * 1024:
-        raise HTTPException(400, "Max upload size exceeded (5MB)")
-
-    if session is None:
-        load_yolo_model()
-
-    img = bytes_to_pil(contents).convert("RGB")
-    img = resize_to_640(img)
-
+async def detect(image: UploadFile = File(...), mode: str = Form("real")):
     try:
-        os.environ["RMBG_SESSION_THREADS"] = "1"
-        img_no_bg = remove(img)
+        img = read_image(image)
+        if img is None:
+            return {"success": False, "reason": "invalid_image_format"}
+
+        # ---------- STAGE 1: FILTER ----------
+        r1 = MODEL_FILTER(img, conf=0.35, verbose=False)[0]
+        if r1.boxes is None or len(r1.boxes) == 0:
+            return {"success": False, "reason": "no_banana_detected"}
+
+        # ---------- STAGE 2: REAL DETECTION ----------
+        used_fallback = False
+
+        try:
+            r2 = MODEL_REAL(img, conf=0.25, verbose=False)[0]
+        except Exception as e:
+            print("🚨 Runtime error on main model, switching to fallback (v8n)")
+            fallback_model = YOLO(os.path.join(MODEL_DIR, "best_modelv8nbg.pt"))
+            r2 = fallback_model(img, conf=0.25, verbose=False)[0]
+            used_fallback = True
+
+        if r2.boxes is None or len(r2.boxes) == 0:
+            return {"success": False, "reason": "banana_like_object"}
+
+        # ---------- POST PROCESS ----------
+        confs = r2.boxes.conf.cpu().numpy()
+        clses = r2.boxes.cls.cpu().numpy().astype(int)
+
+        best_idx = int(confs.argmax())
+        class_id = int(clses[best_idx])
+        conf = float(confs[best_idx])
+
+        if conf < 0.40:
+            return {"success": False, "reason": "low_confidence"}
+
+        banana_key = CLASS_KEYS.get(class_id)
+        if banana_key is None:
+            return {"success": False, "reason": "unknown_class_id"}
+
+        return {
+            "success": True,
+            "banana_key": banana_key,
+            "confidence": round(conf, 3),
+            "engine": "fallback" if used_fallback else "main"
+        }
+
     except Exception as e:
-        print("⚠️ rembg failed:", e)
-        img_no_bg = img
+        print("❌ Server Error:", e)
+        return {
+            "success": False,
+            "reason": "server_error",
+            "detail": str(e)
+        }
 
-    arr = np.array(img_no_bg).astype(np.float32) / 255.0
-    arr = np.transpose(arr, (2, 0, 1))[None, :, :, :]
-
-    input_name = session.get_inputs()[0].name
-    outputs = session.run(None, {input_name: arr})
-
-    detections = outputs[0].tolist() if len(outputs) > 0 else []
-
-    return {"detections": detections}
-
+# -------------------------
+# RUN
+# -------------------------
 if __name__ == "__main__":
     import uvicorn
-    print(f"Running on port {PORT}")
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
