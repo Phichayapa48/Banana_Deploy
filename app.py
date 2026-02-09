@@ -4,41 +4,38 @@ import numpy as np
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
+import uvicorn
 
-app = FastAPI()
+app = FastAPI(title="Banana Expert AI Server")
 
-# ✅ แก้ไขส่วน CORS ให้รองรับการเชื่อมต่อจาก Vercel
+# ✅ 1. CORS Setup - ให้ Frontend (React) เรียกใช้งานได้ไม่มีปัญหา
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # อนุญาตทุกแหล่งที่มา
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # -------------------------
-# LOAD MODELS WITH FALLBACK
+# ✅ 2. LOAD MODELS (Optimized)
 # -------------------------
-print("🚀 Loading Models...")
+print("🚀 Loading Banana Expert Models...")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
-# 1. Filter model (banana / non-banana)
-MODEL_FILTER = YOLO(os.path.join(MODEL_DIR, "best_m1_bgv8s.pt"))
-
-# 2. Real-image detector (Main)
+# โหลด Model หลัก (สลับไปใช้ v8n อัตโนมัติถ้า v8s โหลดไม่สำเร็จเพื่อความเร็ว)
 try:
+    # พยายามโหลดตัว Small ก่อน
     MODEL_REAL = YOLO(os.path.join(MODEL_DIR, "best_modelv8sbg.pt"))
-    print("✅ MODEL_REAL: YOLOv8s loaded as Main")
+    print("✅ MODEL_REAL: YOLOv8s loaded (Small)")
 except Exception as e:
-    print(f"⚠️ Cannot load YOLOv8s, switching to YOLOv8n fallback... Error: {e}")
+    print(f"⚠️ Switching to Fallback (Nano): {e}")
+    # ถ้าเครื่องช้ามาก แนะนำให้ใช้ตัว Nano (v8n) จะซิ่งกว่าเยอะครับ
     MODEL_REAL = YOLO(os.path.join(MODEL_DIR, "best_modelv8nbg.pt"))
-    print("🚀 MODEL_REAL: YOLOv8n loaded as Fallback")
-
-print("✅ All systems ready")
 
 # -------------------------
-# CLASS KEY MAP (ปรับเป็น lowercase เพื่อเชื่อม slug ใน Supabase)
+# ✅ 3. CONFIGURATION
 # -------------------------
 CLASS_KEYS = {
     0: "candyapple", 1: "namwa", 2: "namwadam", 3: "homthong",
@@ -46,89 +43,80 @@ CLASS_KEYS = {
     8: "ngachang", 9: "huamao",
 }
 
-# -------------------------
-# UTILS
-# -------------------------
-def read_image(file: UploadFile):
-    img_bytes = file.file.read()
-    nparr = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    return img
+def preprocess_image(file: UploadFile):
+    """ฟังก์ชันอ่านภาพและบีบอัดขนาดเพื่อความเร็วในการประมวลผล"""
+    try:
+        img_bytes = file.file.read()
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if img is not None:
+            # ⚡️ หัวใจสำคัญ: Resize ให้เหลือ 640x640 ทันทีที่รับมา
+            # ช่วยลดภาระ CPU ในการคำนวณลงได้มหาศาล
+            img = cv2.resize(img, (640, 640))
+        return img
+    except Exception as e:
+        print(f"Error reading image: {e}")
+        return None
 
 # -------------------------
-# API ROUTES
+# ✅ 4. API ROUTES
 # -------------------------
 
-# ✅ เพิ่ม Route หน้าแรกเพื่อไม่ให้ขึ้น Not Found และใช้เช็คสถานะ
 @app.get("/")
 async def root():
-    return {
-        "message": "Banana Expert AI Server is Running",
-        "status": "online",
-        "docs": "/docs"
-    }
+    return {"status": "online", "message": "Banana Expert AI is ready to work!"}
 
 @app.post("/detect")
-async def detect(image: UploadFile = File(...), mode: str = Form("real")):
+async def detect(image: UploadFile = File(...)):
     try:
-        img = read_image(image)
+        # 1. รับรูปและ Resize (ใช้ฟังก์ชันที่เราสร้างไว้)
+        img = preprocess_image(image)
         if img is None:
             return {"success": False, "reason": "invalid_image_format"}
 
-        # ---------- STAGE 1: FILTER ----------
-        r1 = MODEL_FILTER(img, conf=0.35, verbose=False)[0]
-        if r1.boxes is None or len(r1.boxes) == 0:
-            return {"success": False, "reason": "no_banana_detected"}
+        # 2. เริ่มการทำนาย (Inference)
+        # ⚡️ การตั้งค่าให้เร็ว:
+        # - augment=False: ปิดการคำนวณซ้ำหลายมุม (ประหยัดเวลา 3-4 วินาที)
+        # - verbose=False: ไม่ต้อง print log ยาวๆ ออกจอ
+        # - conf=0.10: ตั้งค่าความเชื่อมั่นขั้นต่ำไว้ต่ำหน่อย เพื่อให้เห็นกล้วยในหลายๆ สภาพ
+        results = MODEL_REAL(img, conf=0.10, iou=0.45, augment=False, verbose=False)[0]
 
-        # ---------- STAGE 2: REAL DETECTION ----------
-        used_fallback = False
+        # 3. ตรวจสอบว่าเจออะไรไหม
+        if not results.boxes or len(results.boxes) == 0:
+            return {
+                "success": False, 
+                "reason": "no_banana_detected"
+            }
 
-        try:
-            r2 = MODEL_REAL(img, conf=0.25, verbose=False)[0]
-        except Exception as e:
-            print("🚨 Runtime error on main model, switching to fallback (v8n)")
-            fallback_model = YOLO(os.path.join(MODEL_DIR, "best_modelv8nbg.pt"))
-            r2 = fallback_model(img, conf=0.25, verbose=False)[0]
-            used_fallback = True
-
-        if r2.boxes is None or len(r2.boxes) == 0:
-            return {"success": False, "reason": "banana_like_object"}
-
-        # ---------- POST PROCESS ----------
-        confs = r2.boxes.conf.cpu().numpy()
-        clses = r2.boxes.cls.cpu().numpy().astype(int)
-
+        # 4. ดึงผลลัพธ์ตัวที่คะแนนสูงที่สุด (Confidence สูงสุด)
+        confs = results.boxes.conf.cpu().numpy()
+        clses = results.boxes.cls.cpu().numpy().astype(int)
         best_idx = int(confs.argmax())
+        
+        final_conf = float(confs[best_idx])
         class_id = int(clses[best_idx])
-        conf = float(confs[best_idx])
+        banana_key = CLASS_KEYS.get(class_id, "unknown")
 
-        if conf < 0.40:
-            return {"success": False, "reason": "low_confidence"}
-
-        banana_key = CLASS_KEYS.get(class_id)
-        if banana_key is None:
-            return {"success": False, "reason": "unknown_class_id"}
-
+        # 5. ส่งผลกลับไปที่หน้าจอ (Frontend)
         return {
             "success": True,
             "banana_key": banana_key,
-            "confidence": round(conf, 3),
-            "engine": "fallback" if used_fallback else "main"
+            "confidence": round(final_conf, 3),
+            "debug_info": {
+                "boxes_detected": len(results.boxes),
+                "model_used": "YOLOv8"
+            }
         }
 
     except Exception as e:
-        print("❌ Server Error:", e)
-        return {
-            "success": False,
-            "reason": "server_error",
-            "detail": str(e)
-        }
+        print(f"❌ Server Error: {e}")
+        return {"success": False, "reason": "server_error", "detail": str(e)}
 
 # -------------------------
-# RUN
+# ✅ 5. RUN SERVER
 # -------------------------
 if __name__ == "__main__":
-    import uvicorn
-    # ดึงค่า Port จาก Environment (เผื่อรัน Local จะได้รันง่ายๆ)
+    # รันพอร์ต 8000 เป็นค่ามาตรฐาน
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
