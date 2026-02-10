@@ -8,14 +8,14 @@ from ultralytics import YOLO
 import uvicorn
 import pkg_resources
 
+app = FastAPI(title="Banana Expert AI Server")
+
 @app.get("/debug/deps")
 def debug_deps():
     return {
         "python-multipart": pkg_resources.get_distribution("python-multipart").version
     }
-
-app = FastAPI(title="Banana Expert AI Server")
-
+    
 # =========================================================
 # CORS
 # =========================================================
