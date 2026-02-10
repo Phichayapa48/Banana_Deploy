@@ -14,39 +14,31 @@ app = FastAPI(title="Banana Expert AI Server")
 # =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ช่วง deploy เอา * ไปก่อน
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =========================
-# ROOT (Render ใช้เช็คสถานะ)
+# ROOT / HEALTH CHECK
 # =========================
 @app.get("/")
 def root():
-    return {
-        "status": "ok",
-        "service": "Banana Expert AI",
-        "message": "AI Server is running"
-    }
+    return {"status": "ok"}
+
+@app.get("/health")
+def health():
+    return {"alive": True}
 
 # =========================
-# LOAD MODEL
+# MODEL CONFIG
 # =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
 MODEL_REAL = None
-try:
-    MODEL_PATH = os.path.join(MODEL_DIR, "best_modelv8sbg.pt")
-    if not os.path.exists(MODEL_PATH):
-        MODEL_PATH = os.path.join(MODEL_DIR, "best_modelv8nbg.pt")
-
-    MODEL_REAL = YOLO(MODEL_PATH)
-    print(f"✅ Model loaded: {MODEL_PATH}")
-except Exception as e:
-    print(f"❌ Model load error: {e}")
+MODEL_PATH = None
 
 CLASS_KEYS = {
     0: "candyapple",
@@ -61,23 +53,32 @@ CLASS_KEYS = {
     9: "huamao",
 }
 
-# =========================
-# DETECT (GET = health check)
-# =========================
-@app.get("/detect")
-@app.get("/detect/")
-def detect_health():
-    return {
-        "status": "ok",
-        "message": "Detect endpoint is ready (POST image to detect)"
-    }
+def load_model():
+    global MODEL_REAL, MODEL_PATH
+
+    if MODEL_REAL is not None:
+        return
+
+    try:
+        bg = os.path.join(MODEL_DIR, "best_modelv8sbg.pt")
+        nbg = os.path.join(MODEL_DIR, "best_modelv8nbg.pt")
+
+        MODEL_PATH = bg if os.path.exists(bg) else nbg
+        MODEL_REAL = YOLO(MODEL_PATH)
+
+        print(f"✅ Model loaded: {MODEL_PATH}")
+
+    except Exception as e:
+        print(f"❌ Model load failed: {e}")
+        MODEL_REAL = None
 
 # =========================
-# DETECT (POST = real inference)
+# DETECT
 # =========================
 @app.post("/detect")
-@app.post("/detect/")
 async def detect(file: UploadFile = File(...)):
+    load_model()
+
     if MODEL_REAL is None:
         return {"success": False, "reason": "model_not_loaded"}
 
@@ -93,7 +94,6 @@ async def detect(file: UploadFile = File(...)):
             source=img,
             conf=0.2,
             imgsz=640,
-            save=False,
             verbose=False
         )[0]
 
@@ -122,4 +122,4 @@ async def detect(file: UploadFile = File(...)):
 # =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
