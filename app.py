@@ -10,32 +10,40 @@ import uvicorn
 app = FastAPI(title="Banana Expert AI Server")
 
 # =========================================================
-# ✅ CORS (แก้ 405 จริง)
+# CORS
 # =========================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://main-banana1.vercel.app",
-        "http://localhost:5173",  # เผื่อ dev
+        "http://localhost:5173",
     ],
-    allow_credentials=True,      # 🔥 สำคัญมาก
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =========================================================
-# ROOT
+# ROOT + HEAD (🔥 สำคัญมากสำหรับ Render)
 # =========================================================
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Banana Expert AI"}
 
+@app.head("/")
+def head_root():
+    return None
+
 @app.get("/health")
 def health():
     return {"alive": True}
 
+@app.head("/health")
+def head_health():
+    return None
+
 # =========================================================
-# LOAD MODEL (lazy load)
+# LOAD MODEL
 # =========================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
@@ -72,7 +80,7 @@ def load_model():
         MODEL_REAL = None
 
 # =========================================================
-# DETECT
+# DETECT + HEAD
 # =========================================================
 @app.post("/detect")
 async def detect(file: UploadFile = File(...)):
@@ -83,10 +91,7 @@ async def detect(file: UploadFile = File(...)):
 
     try:
         img_bytes = await file.read()
-        img = cv2.imdecode(
-            np.frombuffer(img_bytes, np.uint8),
-            cv2.IMREAD_COLOR
-        )
+        img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
 
         if img is None:
             return {"success": False, "reason": "invalid_image"}
@@ -117,8 +122,12 @@ async def detect(file: UploadFile = File(...)):
     finally:
         gc.collect()
 
+@app.head("/detect")
+def head_detect():
+    return None
+
 # =========================================================
-# START (Render)
+# START
 # =========================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
