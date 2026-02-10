@@ -10,7 +10,7 @@ import uvicorn
 app = FastAPI(title="Banana Expert AI Server")
 
 # =========================================================
-# 1. CORS - จัดการ OPTIONS ให้อัตโนมัติ
+# 1. CORS - ตัวนี้จัดการ OPTIONS ให้เองอัตโนมัติ ห้ามเขียนซ้อน
 # =========================================================
 app.add_middleware(
     CORSMiddleware,
@@ -21,7 +21,7 @@ app.add_middleware(
 )
 
 # =========================================================
-# 2. LOAD MODEL
+# 2. LOAD MODEL (Global – โหลดครั้งเดียวตอน Start)
 # =========================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
@@ -37,6 +37,9 @@ except Exception as e:
     print(f"⚠️ Fallback to Nano: {e}")
     MODEL_REAL = YOLO(os.path.join(MODEL_DIR, "best_modelv8nbg.pt"))
 
+# =========================================================
+# 3. CLASS MAPPING
+# =========================================================
 CLASS_KEYS = {
     0: "candyapple", 1: "namwa", 2: "namwadam", 3: "homthong",
     4: "nak", 5: "thepphanom", 6: "kai", 7: "lepchangkut",
@@ -44,13 +47,14 @@ CLASS_KEYS = {
 }
 
 # =========================================================
-# 3. ROUTES
+# 4. ROUTES
 # =========================================================
 
 @app.get("/")
 async def root():
     return {"status": "online", "message": "Banana Expert AI is ready!"}
 
+# ดักจับทั้ง /detect และ /detect/ เพื่อป้องกัน 405 Redirect
 @app.post("/detect")
 @app.post("/detect/")
 async def detect(file: UploadFile = File(...)):
@@ -85,7 +89,11 @@ async def detect(file: UploadFile = File(...)):
             "banana_key": banana_slug,
             "class_name": banana_slug,
             "confidence": round(float(confs[best_idx]), 3),
-            "debug": {"count": len(results.boxes), "model": "YOLOv8-optimized"}
+            "debug": {
+                "count": len(results.boxes),
+                "model": "YOLOv8-optimized",
+                "filename": file.filename
+            }
         }
     except Exception as e:
         print(f"❌ Server error: {e}")
