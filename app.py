@@ -10,34 +10,29 @@ import uvicorn
 app = FastAPI(title="Banana Expert AI Server")
 
 # =========================================================
-# CORS
+# ✅ CORS (แก้ 405 จริง)
 # =========================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=[
+        "https://main-banana1.vercel.app",
+        "http://localhost:5173",  # เผื่อ dev
+    ],
+    allow_credentials=False,      # 🔥 สำคัญมาก
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
 # =========================================================
-# ROOT + HEAD (สำคัญมาก)
+# ROOT
 # =========================================================
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Banana Expert AI"}
 
-@app.head("/")
-def head_root():
-    return None
-
 @app.get("/health")
 def health():
     return {"alive": True}
-
-@app.head("/health")
-def head_health():
-    return None
 
 # =========================================================
 # LOAD MODEL (lazy load)
@@ -77,7 +72,7 @@ def load_model():
         MODEL_REAL = None
 
 # =========================================================
-# DETECT + HEAD (แก้ 405)
+# DETECT
 # =========================================================
 @app.post("/detect")
 async def detect(file: UploadFile = File(...)):
@@ -121,10 +116,6 @@ async def detect(file: UploadFile = File(...)):
 
     finally:
         gc.collect()
-
-@app.head("/detect")
-def head_detect():
-    return None
 
 # =========================================================
 # START (Render)
