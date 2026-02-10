@@ -10,7 +10,7 @@ import uvicorn
 app = FastAPI(title="Banana Expert AI Server")
 
 # =========================================================
-# 1. CORS (ย้ายมาบนสุดเพื่อความชัวร์)
+# 1. CORS (ลำดับความสำคัญสูงสุด)
 # =========================================================
 app.add_middleware(
     CORSMiddleware,
@@ -21,7 +21,7 @@ app.add_middleware(
 )
 
 # =========================================================
-# 2. LOAD MODEL (Global – โหลดครั้งเดียว)
+# 2. LOAD MODEL (Global – โหลดครั้งเดียวตอน Start)
 # =========================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
@@ -30,11 +30,12 @@ print("🚀 Loading Banana Expert Models...")
 try:
     MODEL_PATH = os.path.join(MODEL_DIR, "best_modelv8sbg.pt")
     if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError("YOLOv8s not found")
+        raise FileNotFoundError("YOLOv8s file not found")
     MODEL_REAL = YOLO(MODEL_PATH)
-    print("✅ YOLOv8s loaded")
+    print("✅ YOLOv8s loaded successfully")
 except Exception as e:
     print(f"⚠️ Fallback to Nano: {e}")
+    # ถ้าตัว s มีปัญหา ให้ลองโหลดตัว n
     MODEL_REAL = YOLO(os.path.join(MODEL_DIR, "best_modelv8nbg.pt"))
 
 # =========================================================
@@ -54,14 +55,14 @@ CLASS_KEYS = {
 }
 
 # =========================================================
-# 4. ROUTES
+# 4. ROUTES & ERROR HANDLING
 # =========================================================
 
 @app.get("/")
 async def root():
     return {"status": "online", "message": "Banana Expert AI is ready!"}
 
-# ✅ ดักจับ OPTIONS Request เพื่อป้องกัน 405 (Preflight)
+# ✅ ดักจับ OPTIONS Request เพื่อป้องกัน 405 (Preflight) จาก Browser
 @app.options("/{rest_of_path:path}")
 async def preflight_handler(request: Request, rest_of_path: str):
     return JSONResponse(
@@ -73,7 +74,7 @@ async def preflight_handler(request: Request, rest_of_path: str):
         },
     )
 
-# ✅ สำคัญมาก: กัน 405 จาก Render / Browser
+# ✅ ป้องกัน 405 จากการเผลอเรียก GET
 @app.get("/detect")
 @app.get("/detect/")
 @app.head("/detect")
@@ -81,14 +82,15 @@ async def preflight_handler(request: Request, rest_of_path: str):
 async def detect_guard():
     return {
         "status": "ok",
-        "message": "Use POST /detect with multipart/form-data"
+        "message": "Use POST /detect/ with multipart/form-data"
     }
 
+# ✅ POST ROUTE (รับทั้งแบบมีและไม่มี Slash)
 @app.post("/detect")
 @app.post("/detect/")
 async def detect(file: UploadFile = File(...)):
     try:
-        # 1. อ่านภาพ
+        # 1. อ่านภาพจาก Buffer
         img_bytes = await file.read()
         nparr = np.frombuffer(img_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -96,10 +98,10 @@ async def detect(file: UploadFile = File(...)):
         if img is None:
             return {"success": False, "reason": "invalid_image"}
 
-        # 2. Resize (ลดภาระ CPU / RAM)
+        # 2. Resize เพื่อคุม Memory และเพิ่มความเร็ว
         img = cv2.resize(img, (640, 640))
 
-        # 3. Inference
+        # 3. ประมวลผลด้วย AI
         results = MODEL_REAL.predict(
             source=img,
             conf=0.15,
@@ -108,20 +110,21 @@ async def detect(file: UploadFile = File(...)):
             verbose=False
         )[0]
 
+        # กรณีไม่เจอกล้วยในภาพ
         if not results.boxes or len(results.boxes) == 0:
             return {
                 "success": False, 
                 "reason": "no_banana_detected"
             }
 
-        # 4. เลือกผลที่มั่นใจสุด
+        # 4. ดึงผลลัพธ์ที่ Confidence สูงสุด
         confs = results.boxes.conf.cpu().numpy()
         clses = results.boxes.cls.cpu().numpy().astype(int)
 
         best_idx = int(np.argmax(confs))
         banana_slug = CLASS_KEYS.get(int(clses[best_idx]), "unknown")
 
-        # 🟢 คืนค่าทุกบรรทัดที่คุณเขียนมา รวมถึงส่วน debug
+        # 🟢 คืนค่าข้อมูลครบถ้วนสำหรับ Frontend
         return {
             "success": True,
             "banana_key": banana_slug,
@@ -135,7 +138,7 @@ async def detect(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        print("❌ Server error:", e)
+        print(f"❌ Server error: {e}")
         return {
             "success": False,
             "reason": "server_error",
@@ -143,11 +146,13 @@ async def detect(file: UploadFile = File(...)):
         }
 
     finally:
+        # ปิดไฟล์เพื่อคืน Memory
         await file.close()
 
 # =========================================================
 # 5. RUN SERVER
 # =========================================================
 if __name__ == "__main__":
+    # Render จะส่ง Port มาให้ผ่าน Environment Variable
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
