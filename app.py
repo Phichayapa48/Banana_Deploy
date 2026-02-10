@@ -1,15 +1,16 @@
 import os
 import cv2
 import numpy as np
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from ultralytics import YOLO
 import uvicorn
 
 app = FastAPI(title="Banana Expert AI Server")
 
 # =========================================================
-# 1. CORS
+# 1. CORS (ย้ายมาบนสุดเพื่อความชัวร์)
 # =========================================================
 app.add_middleware(
     CORSMiddleware,
@@ -60,6 +61,17 @@ CLASS_KEYS = {
 async def root():
     return {"status": "online", "message": "Banana Expert AI is ready!"}
 
+# ✅ ดักจับ OPTIONS Request เพื่อป้องกัน 405 (Preflight)
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(request: Request, rest_of_path: str):
+    return JSONResponse(
+        content="OK",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        },
+    )
 
 # ✅ สำคัญมาก: กัน 405 จาก Render / Browser
 @app.get("/detect")
@@ -71,7 +83,6 @@ async def detect_guard():
         "status": "ok",
         "message": "Use POST /detect with multipart/form-data"
     }
-
 
 @app.post("/detect")
 @app.post("/detect/")
@@ -99,7 +110,7 @@ async def detect(file: UploadFile = File(...)):
 
         if not results.boxes or len(results.boxes) == 0:
             return {
-                "success": False,
+                "success": False, 
                 "reason": "no_banana_detected"
             }
 
@@ -110,6 +121,7 @@ async def detect(file: UploadFile = File(...)):
         best_idx = int(np.argmax(confs))
         banana_slug = CLASS_KEYS.get(int(clses[best_idx]), "unknown")
 
+        # 🟢 คืนค่าทุกบรรทัดที่คุณเขียนมา รวมถึงส่วน debug
         return {
             "success": True,
             "banana_key": banana_slug,
@@ -132,7 +144,6 @@ async def detect(file: UploadFile = File(...)):
 
     finally:
         await file.close()
-
 
 # =========================================================
 # 5. RUN SERVER
