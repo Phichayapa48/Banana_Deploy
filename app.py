@@ -14,14 +14,14 @@ app = FastAPI(title="Banana Expert AI Server")
 # =========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # ช่วง deploy เอา * ไปก่อน
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # =========================
-# ROOT (สำคัญมากสำหรับ Render)
+# ROOT (Render ใช้เช็คสถานะ)
 # =========================
 @app.get("/")
 def root():
@@ -62,7 +62,18 @@ CLASS_KEYS = {
 }
 
 # =========================
-# DETECT ENDPOINT
+# DETECT (GET = health check)
+# =========================
+@app.get("/detect")
+@app.get("/detect/")
+def detect_health():
+    return {
+        "status": "ok",
+        "message": "Detect endpoint is ready (POST image to detect)"
+    }
+
+# =========================
+# DETECT (POST = real inference)
 # =========================
 @app.post("/detect")
 @app.post("/detect/")
@@ -86,7 +97,7 @@ async def detect(file: UploadFile = File(...)):
             verbose=False
         )[0]
 
-        if not results.boxes or len(results.boxes) == 0:
+        if results.boxes is None or len(results.boxes) == 0:
             return {"success": False, "reason": "no_banana_detected"}
 
         confs = results.boxes.conf.cpu().numpy()
