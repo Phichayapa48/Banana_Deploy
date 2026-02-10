@@ -2,22 +2,16 @@ import os
 import cv2
 import numpy as np
 import gc
-
-from fastapi import FastAPI, UploadFile, File, Request
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-
 from ultralytics import YOLO
 import uvicorn
 
-# ===============================
-# APP INIT
-# ===============================
 app = FastAPI(title="Banana Expert AI Server")
 
-# ===============================
-# CORS (เปิดหมด กันพลาด)
-# ===============================
+# =========================
+# CORS
+# =========================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,27 +20,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===============================
+# =========================
+# ROOT (สำคัญมากสำหรับ Render)
+# =========================
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "service": "Banana Expert AI",
+        "message": "AI Server is running"
+    }
+
+# =========================
 # LOAD MODEL
-# ===============================
+# =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
 MODEL_REAL = None
-
 try:
     MODEL_PATH = os.path.join(MODEL_DIR, "best_modelv8sbg.pt")
     if not os.path.exists(MODEL_PATH):
         MODEL_PATH = os.path.join(MODEL_DIR, "best_modelv8nbg.pt")
 
     MODEL_REAL = YOLO(MODEL_PATH)
-    print(f"✅ AI Ready with: {MODEL_PATH}")
+    print(f"✅ Model loaded: {MODEL_PATH}")
 except Exception as e:
     print(f"❌ Model load error: {e}")
 
-# ===============================
-# CLASS MAP
-# ===============================
 CLASS_KEYS = {
     0: "candyapple",
     1: "namwa",
@@ -60,20 +61,9 @@ CLASS_KEYS = {
     9: "huamao",
 }
 
-# ===============================
-# OPTIONS (กัน 405 Preflight)
-# ===============================
-@app.options("/detect")
-@app.options("/detect/")
-async def detect_options(request: Request):
-    return JSONResponse(
-        status_code=200,
-        content={"status": "ok"}
-    )
-
-# ===============================
-# POST /detect
-# ===============================
+# =========================
+# DETECT ENDPOINT
+# =========================
 @app.post("/detect")
 @app.post("/detect/")
 async def detect(file: UploadFile = File(...)):
@@ -90,7 +80,7 @@ async def detect(file: UploadFile = File(...)):
 
         results = MODEL_REAL.predict(
             source=img,
-            conf=0.20,
+            conf=0.2,
             imgsz=640,
             save=False,
             verbose=False
@@ -114,13 +104,11 @@ async def detect(file: UploadFile = File(...)):
         return {"success": False, "reason": str(e)}
 
     finally:
-        if "img" in locals():
-            del img
         gc.collect()
 
-# ===============================
-# RUN SERVER (Render ใช้ PORT)
-# ===============================
+# =========================
+# START
+# =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
