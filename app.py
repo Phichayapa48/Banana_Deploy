@@ -69,7 +69,7 @@ async def preprocess_image(file: UploadFile):
 async def root():
     return {"status": "online", "message": "Banana Expert AI is ready to work!"}
 
-@app.post("/detect/")
+@app.post("/detect")
 async def detect(image: UploadFile = File(...)):
     try:
         # 1. รับรูปและ Resize (ต้องใส่ await เพราะ preprocess เป็น async)
