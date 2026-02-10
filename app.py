@@ -9,9 +9,9 @@ import uvicorn
 
 app = FastAPI(title="Banana Expert AI Server")
 
-# =========================
+# =========================================================
 # CORS
-# =========================
+# =========================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,20 +20,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =========================
-# ROOT / HEALTH CHECK
-# =========================
+# =========================================================
+# ROOT + HEAD (สำคัญมาก)
+# =========================================================
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return {"status": "ok", "service": "Banana Expert AI"}
+
+@app.head("/")
+def head_root():
+    return None
 
 @app.get("/health")
 def health():
     return {"alive": True}
 
-# =========================
-# MODEL CONFIG
-# =========================
+@app.head("/health")
+def head_health():
+    return None
+
+# =========================================================
+# LOAD MODEL (lazy load)
+# =========================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
@@ -55,26 +63,22 @@ CLASS_KEYS = {
 
 def load_model():
     global MODEL_REAL, MODEL_PATH
-
     if MODEL_REAL is not None:
         return
 
     try:
         bg = os.path.join(MODEL_DIR, "best_modelv8sbg.pt")
         nbg = os.path.join(MODEL_DIR, "best_modelv8nbg.pt")
-
         MODEL_PATH = bg if os.path.exists(bg) else nbg
         MODEL_REAL = YOLO(MODEL_PATH)
-
         print(f"✅ Model loaded: {MODEL_PATH}")
-
     except Exception as e:
-        print(f"❌ Model load failed: {e}")
+        print(f"❌ Model load error: {e}")
         MODEL_REAL = None
 
-# =========================
-# DETECT
-# =========================
+# =========================================================
+# DETECT + HEAD (แก้ 405)
+# =========================================================
 @app.post("/detect")
 async def detect(file: UploadFile = File(...)):
     load_model()
@@ -84,8 +88,10 @@ async def detect(file: UploadFile = File(...)):
 
     try:
         img_bytes = await file.read()
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        img = cv2.imdecode(
+            np.frombuffer(img_bytes, np.uint8),
+            cv2.IMREAD_COLOR
+        )
 
         if img is None:
             return {"success": False, "reason": "invalid_image"}
@@ -97,12 +103,11 @@ async def detect(file: UploadFile = File(...)):
             verbose=False
         )[0]
 
-        if results.boxes is None or len(results.boxes) == 0:
+        if not results.boxes or len(results.boxes) == 0:
             return {"success": False, "reason": "no_banana_detected"}
 
         confs = results.boxes.conf.cpu().numpy()
         clses = results.boxes.cls.cpu().numpy().astype(int)
-
         best_idx = int(np.argmax(confs))
 
         return {
@@ -117,9 +122,13 @@ async def detect(file: UploadFile = File(...)):
     finally:
         gc.collect()
 
-# =========================
-# START
-# =========================
+@app.head("/detect")
+def head_detect():
+    return None
+
+# =========================================================
+# START (Render)
+# =========================================================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("app:app", host="0.0.0.0", port=port)
