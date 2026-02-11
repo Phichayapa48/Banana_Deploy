@@ -3,107 +3,128 @@ import cv2
 import numpy as np
 import gc
 import torch
-from fastapi import FastAPI, File, UploadFile, HTTPException
+import sys
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
-import uvicorn
 
-app = FastAPI(title="Banana Expert AI Server")
+app = FastAPI(title="Banana Expert AI Server (3-Model Edition)")
 
-# ✅ CORS Setup
+# ตั้งค่า CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # ในโปรดักชั่นควรระบุ Domain Vercel ของพี่นะครับ
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ Model Config
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "model")
-MODEL_REAL = None
 
+# -------------------------
+# 🚀 LOAD ALL 3 MODELS (Strict Loading)
+# -------------------------
+print("🚀 Loading 3 Models...")
+try:
+    # 1. โมเดลกรอง (Stage 1)
+    MODEL_FILTER = YOLO(os.path.join(BASE_DIR, "model/best_m1_bgv8n.pt")).to("cpu")
+    
+    # 2. โมเดลหลัก (Stage 2: Main)
+    MODEL_MAIN   = YOLO(os.path.join(BASE_DIR, "model/best_modelv8sbg.pt")).to("cpu")
+    
+    # 3. โมเดลสำรอง (Stage 3: Backup)
+    MODEL_BACKUP = YOLO(os.path.join(BASE_DIR, "model/best_modelv8nbg.p")).to("cpu")
+    
+    print("✅ 3 Models Loaded: Filter, Main, and Backup")
+except Exception as e:
+    # 🛑 ถ้าโมเดลพังตั้งแต่ตอนโหลด ให้สั่งปิดโปรแกรมทันที
+    print(f"❌ CRITICAL ERROR: Could not load models: {e}")
+    sys.exit(1)
+
+# แผนผังสายพันธุ์กล้วย
 CLASS_KEYS = {
-    0: "candyapple", 1: "namwa", 2: "namwadam", 3: "homthong",
-    4: "nak", 5: "thepphanom", 6: "kai", 7: "lepchangkut",
-    8: "ngachang", 9: "huamao"
+    0: "Candyapple", 1: "Namwa", 2: "Namwadam", 3: "Homthong",
+    4: "Nak", 5: "Thepphanom", 6: "Kai", 7: "Lepchanggud",
+    8: "Ngachang", 9: "Huamao",
 }
 
-# ✅ Load Model ทันทีที่เครื่องเปิด (Startup)
-@app.on_event("startup")
-def load_model():
-    global MODEL_REAL
-    try:
-        model_files = ["best_modelv8sbg.pt", "best_modelv8nbg.pt"]
-        found_path = None
-        for f in model_files:
-            p = os.path.join(MODEL_DIR, f)
-            if os.path.exists(p):
-                found_path = p
-                break
-        
-        if found_path:
-            MODEL_REAL = YOLO(found_path)
-            print(f"✅ Model loaded successfully: {found_path}")
-        else:
-            print("❌ No model file found!")
-    except Exception as e:
-        print(f"❌ Error loading model: {e}")
-
-@app.get("/")
-def root():
-    return {"status": "online", "model_ready": MODEL_REAL is not None}
+def read_image(file: UploadFile):
+    data = np.frombuffer(file.file.read(), np.uint8)
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 @app.post("/detect")
-async def detect(file: UploadFile = File(...)):
-    if MODEL_REAL is None:
-        raise HTTPException(status_code=503, detail="Model not loaded yet")
-
+async def detect(image: UploadFile = File(...)):
+    img = None
     try:
-        # 1. อ่านไฟล์รูป
-        contents = await file.read()
-        
-        # 2. แปลงเป็น OpenCV
-        nparr = np.frombuffer(contents, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        img = read_image(image)
+        if img is None: 
+            return {"success": False, "reason": "invalid_image"}
 
-        if img is None:
-            return {"success": False, "reason": "invalid_image_format"}
-
-        # 3. Predict (ใช้ torch.no_grad() เพื่อประหยัด RAM)
+        # -------------------------------------------------------
+        # STAGE 1 : FILTER (กรองภาพกล้วย)
+        # -------------------------------------------------------
         with torch.no_grad():
-            results = MODEL_REAL.predict(
-                source=img,
-                conf=0.25,
-                imgsz=640,
-                verbose=False
+            r1 = MODEL_FILTER.predict(
+                source=img, conf=0.35, imgsz=416, device="cpu", verbose=False
             )[0]
-
-        # 4. ตรวจสอบผล
-        if not results.boxes or len(results.boxes) == 0:
+        
+        if r1.boxes is None or len(r1.boxes) == 0:
             return {"success": False, "reason": "no_banana_detected"}
 
-        confs = results.boxes.conf.cpu().numpy()
-        clses = results.boxes.cls.cpu().numpy().astype(int)
-        best_idx = int(np.argmax(confs))
+        # -------------------------------------------------------
+        # STAGE 2 : MAIN DETECTION (พยายามใช้ตัวหลักก่อน)
+        # -------------------------------------------------------
+        final_result = None
+        is_backup_used = False
 
+        try:
+            with torch.no_grad():
+                r_main = MODEL_MAIN.predict(
+                    source=img, conf=0.25, imgsz=512, device="cpu", verbose=False
+                )[0]
+            
+            # เช็คว่าตัวหลักเจอของไหม
+            if r_main.boxes is not None and len(r_main.boxes) > 0:
+                final_result = r_main
+            else:
+                raise ValueError("Main model found nothing")
+
+        except Exception as e:
+            # -------------------------------------------------------
+            # STAGE 3 : BACKUP DETECTION (ถ้าตัวหลักพังหรือหาไม่เจอ)
+            # -------------------------------------------------------
+            print(f"🔄 Switching to Backup Model due to: {e}")
+            is_backup_used = True
+            with torch.no_grad():
+                final_result = MODEL_BACKUP.predict(
+                    source=img, conf=0.20, imgsz=512, device="cpu", verbose=False
+                )[0]
+
+        # ตรวจสอบผลลัพธ์สุดท้าย
+        if final_result is None or final_result.boxes is None or len(final_result.boxes) == 0:
+            return {"success": False, "reason": "all_models_failed"}
+
+        # สรุปข้อมูล
+        confs = final_result.boxes.conf.cpu().numpy()
+        clses = final_result.boxes.cls.cpu().numpy().astype(int)
+        best_idx = int(confs.argmax())
+        
         return {
             "success": True,
-            "banana_key": CLASS_KEYS.get(clses[best_idx], "unknown"),
-            "confidence": float(confs[best_idx])
+            "banana_key": CLASS_KEYS.get(int(clses[best_idx]), "unknown"),
+            "confidence": round(float(confs[best_idx]), 4),
+            "used_backup": is_backup_used
         }
 
     except Exception as e:
-        return {"success": False, "reason": str(e)}
-    
+        print("❌ Server Error:", e)
+        return {"success": False, "reason": "server_error"}
     finally:
-        await file.close()
-        # เคลียร์ RAM หลังจบงาน
-        if 'img' in locals(): del img
-        if 'contents' in locals(): del contents
+        # เคลียร์ Memory ทุกครั้ง
+        if img is not None: 
+            del img
         gc.collect()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    import uvicorn
+    # รันบนเครื่องตัวเอง (Local)
+    uvicorn.run(app, host="0.0.0.0", port=10000)
