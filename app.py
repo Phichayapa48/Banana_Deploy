@@ -32,7 +32,7 @@ try:
     MODEL_MAIN   = YOLO(os.path.join(BASE_DIR, "model/best_modelv8sbg.pt")).to("cpu")
     
     # 3. โมเดลสำรอง (Stage 3: Backup)
-    MODEL_BACKUP = YOLO(os.path.join(BASE_DIR, "model/best_modelv8nbg.p")).to("cpu")
+    MODEL_BACKUP = YOLO(os.path.join(BASE_DIR, "model/best_modelv8nbg.pt")).to("cpu")
     
     print("✅ 3 Models Loaded: Filter, Main, and Backup")
 except Exception as e:
